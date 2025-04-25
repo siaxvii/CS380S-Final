@@ -3,4 +3,4 @@
 	url = git@github.com:PLSysSec/rlbox_wasm2c_sandbox.git
 [submodule "submodules/ffmpeg"]
 	path = submodules/ffmpeg
-	url = https://git.ffmpeg.org/ffmpeg.git
+	url = git@github.com:FFmpeg/FFmpeg.git
