@@ -1,3 +1,8 @@
 .vscode
 **/build/
 **/install/
+**/build-rlbox/
+**/install-ffmpeg/
+ffmpeg_wasm2c.c
+ffmpeg_wasm2c.h
+main
