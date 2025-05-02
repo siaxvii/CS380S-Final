@@ -1,18 +1,20 @@
 #!/bin/bash -e
 
+
 # Set variables
 
 SCRIPT_DIR=$(dirname $(realpath ${BASH_SOURCE[0]}))
 REPO_DIR=$(dirname $SCRIPT_DIR)
 
 BUILD_DIR=$REPO_DIR/build
+RLBOX_BUILD_DIR=$BUILD_DIR-rlbox
 INSTALL_DIR=$REPO_DIR/install
+FFMPEG_INSTALL_DIR=$INSTALL_DIR-ffmpeg
 
 GREEN='\033[0;32m'
 NC='\033[0m'
 
 
-RLBOX_BUILD_DIR=$BUILD_DIR-rlbox
 RLBOX_ROOT=$REPO_DIR/submodules/rlbox-wasm2c-sandbox
 RLBOX_INCLUDE=$RLBOX_BUILD_DIR/_deps/rlbox-src/code/include
 WASI_SDK_ROOT=$RLBOX_BUILD_DIR/_deps/wasiclang-src
@@ -24,8 +26,8 @@ WASI_SYSROOT=$WASI_SDK_ROOT/share/wasi-sysroot
 WASM2C=$RLBOX_BUILD_DIR/_deps/wasm2c_compiler-src/bin/wasm2c
 WASM_CFLAGS="-Wl,--export-all -Wl,--stack-first -Wl,-z,stack-size=262144 \
     -Wl,--no-entry -Wl,--growable-table -Wl,--import-memory -Wl,--import-table"
-
-FFMPEG_INSTALL_DIR=$INSTALL_DIR-ffmpeg
+TORCH_INCLUDE="/usr/include/torch/csrc/api/include"
+PYTHON_INCLUDE="/usr/include/python3.10"
 
 
 # Build RLBox
@@ -48,7 +50,6 @@ if [[ ! -d $FFMPEG_INSTALL_DIR ]]; then
     cd $REPO_DIR/submodules/ffmpeg
 
     echo -e "${GREEN}Building FFmpeg.${NC}"
-
 
     ./configure \
         --ar=$WASI_SDK_ROOT/bin/llvm-ar \
@@ -88,39 +89,80 @@ fi
 
 # Build Repo
 
+rm -rf $BUILD_DIR && mkdir $BUILD_DIR &&
+cd $BUILD_DIR
+
 echo -e "${GREEN}Building FFmpeg wrapper (WASM).${NC}"
 $WASI_CLANG \
+    $REPO_DIR/src/ffmpeg_wrapper.c \
+    -D_GLIBCXX_USE_CXX11_ABI=1 \
+    -o $BUILD_DIR/ffmpeg_wrapper.wasm \
     --sysroot $WASI_SYSROOT \
     $WASM_CFLAGS \
     -I $FFMPEG_INSTALL_DIR/include \
     -L $FFMPEG_INSTALL_DIR/lib \
         -lwasi-emulated-process-clocks \
         -lavutil -lavcodec -lavformat -lavdevice \
-        -lavfilter -lswresample -lswscale -lm \
-    $REPO_DIR/src/ffmpeg_wrapper.c \
-    -o $REPO_DIR/src/ffmpeg_wrapper.wasm
+        -lavfilter -lswresample -lswscale -lm
 
 echo -e "${GREEN}Generating FFmpeg wrapper source (WASM -> C).${NC}"
-rm -f $REPO_DIR/src/ffmpeg_wasm2c.c
-$WASM2C $REPO_DIR/src/ffmpeg_wrapper.wasm -o $REPO_DIR/src/ffmpeg_wasm2c.c
+rm -f $BUILD_DIR/ffmpeg_wasm2c.c
+$WASM2C $BUILD_DIR/ffmpeg_wrapper.wasm -o $BUILD_DIR/ffmpeg_wasm2c.c
 
-echo -e "${GREEN}Compiling app with FFmpeg wrapper.${NC}"
-rm -rf $REPO_DIR/build
-mkdir $REPO_DIR/build
-cd $REPO_DIR/build
-gcc -c \
-    $WASI_RUNTIME_FILES \
-    $WASM2C_RUNTIME_FILES \
+echo -e "${GREEN}Compiling FFmpeg wrapper (C).${NC}"
+gcc -c -fpic \
+    -D_GLIBCXX_USE_CXX11_ABI=1 \
     -I $RLBOX_INCLUDE \
     -I $RLBOX_ROOT/include \
     -I $WASM2C_RUNTIME_PATH \
-    $REPO_DIR/src/ffmpeg_wasm2c.c
-g++ -std=c++17 \
-    $REPO_DIR/src/main.cpp \
-    -o $REPO_DIR/main \
+    $BUILD_DIR/ffmpeg_wasm2c.c \
+    $WASI_RUNTIME_FILES \
+    $WASM2C_RUNTIME_FILES
+
+echo -e "${GREEN}Compiling Sandbox layer.${NC}"
+g++ -c -std=c++17 -fpic \
+    $REPO_DIR/src/sandbox_layer.cpp \
+    -o $BUILD_DIR/sandbox_layer.o \
+    -D_GLIBCXX_USE_CXX11_ABI=1 \
+    -I $BUILD_DIR \
     -I $RLBOX_INCLUDE \
     -I $RLBOX_ROOT/include \
-    -I $WASM2C_RUNTIME_PATH *.o \
-    -lpthread
+    -I $WASM2C_RUNTIME_PATH \
+    -I $TORCH_INCLUDE \
+    -I $PYTHON_INCLUDE
 
-rm *.o
+echo -e "${GREEN}Compiling PyBind layer.${NC}"
+g++ -shared -std=c++17 -fpic \
+    $REPO_DIR/src/pybind_layer.cpp \
+    -o $BUILD_DIR/sandboxed_ffmpeg.so \
+    -D_GLIBCXX_USE_CXX11_ABI=1 \
+    -I $BUILD_DIR \
+    -I $RLBOX_INCLUDE \
+    -I $RLBOX_ROOT/include \
+    -I $WASM2C_RUNTIME_PATH \
+    -I $TORCH_INCLUDE \
+    -I $PYTHON_INCLUDE \
+    -L/usr/lib/python3.10/config-3.10-x86_64-linux-gnu \
+    -L/usr/lib/x86_64-linux-gnu -lpython3.10 \
+    -lcrypt -ldl -lm -lpthread \
+    -ltorch -ltorch_python -ltorch_cpu -lc10 \
+    *.o
+
+echo -e "${GREEN}Compiling Test layer.${NC}"
+g++ -std=c++17 -fpic -fpermissive \
+    $REPO_DIR/src/test.cpp \
+    -o $REPO_DIR/main \
+    -D_GLIBCXX_USE_CXX11_ABI=1 \
+    -I $BUILD_DIR \
+    -I $RLBOX_INCLUDE \
+    -I $RLBOX_ROOT/include \
+    -I $WASM2C_RUNTIME_PATH \
+    -I $TORCH_INCLUDE \
+    -I $PYTHON_INCLUDE \
+    -L/usr/lib/python3.10/config-3.10-x86_64-linux-gnu \
+    -L/usr/lib/x86_64-linux-gnu -lpython3.10 \
+    -lcrypt -ldl -lm -lpthread \
+    -ltorch -ltorch_python -ltorch_cpu -lc10 \
+    *.o
+
+echo -e "${GREEN}Done!${NC}"

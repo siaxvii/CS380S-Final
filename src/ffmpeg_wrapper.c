@@ -19,7 +19,7 @@ int read_packet(void* opaque, uint8_t* buf, int buf_size) {
     return copy_size;
 }
 
-int sandboxed_decode_audio(const char* file_data, const int file_size, DecodedAudio* out_audio) {
+int sandboxed_decode_audio(const char* file_data, const size_t file_size, uint8_t** out_data, size_t* out_size) {
     AVFormatContext* fmt_ctx = NULL;
     AVIOContext* avio_ctx = NULL;
     AVCodecContext* codec_ctx = NULL;
@@ -40,8 +40,6 @@ int sandboxed_decode_audio(const char* file_data, const int file_size, DecodedAu
     uint8_t* final_data = NULL;
     int final_size = 0;
     int final_allocated = 0;
-
-    if (!out_audio) return -100;
 
     fmt_ctx = avformat_alloc_context();
     if (!fmt_ctx) {
@@ -203,12 +201,8 @@ int sandboxed_decode_audio(const char* file_data, const int file_size, DecodedAu
         av_packet_unref(packet);
     }
 
-    // Success, fill output
-    out_audio->data = final_data;
-    out_audio->data_size = final_size;
-    out_audio->sample_rate = 44100;
-    out_audio->channels = 2;
-    out_audio->nb_samples = final_size / (2 * sizeof(int16_t)); // stereo 16-bit
+    *out_data = final_data;
+    *out_size = final_size;
 
     final_data = NULL; // prevent free in cleanup
 
